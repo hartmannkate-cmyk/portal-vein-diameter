@@ -1,0 +1,3509 @@
+---
+title: "PortalVein-Manuscript-AnalysisOnly"
+format:
+  html:
+    page-layout: full
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    code-fold: true
+    code-summary: ""
+editor: visual
+---
+
+# Set-Up
+## Libraries
+```{r}
+#| message: false
+#| warning: false
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(pROC)
+library(data.table)
+library(broom)
+library(lmerTest)
+library(survival)
+library(survminer)
+library(lubridate)
+library(tidyr)
+library(forcats)
+library(lmtest)
+library(sandwich)
+library(gtsummary)
+library(broom.mixed)
+library(psych)
+library(scales)
+library(irr)  
+library(TOSTER)
+library(patchwork)
+```
+
+## Load Data
+```{r}
+#| message: false
+#| warning: false
+load('FILENAME')
+```
+# Table 1
+```{r}
+pv_people <- pv_clean %>%
+  dplyr::group_by(PMBBID) %>%
+  dplyr::summarize(
+    Sex    = first(Sex), # assuming this doesn't change
+    Race    = first(Race), # assuming this doesn't change
+    Height = mean(Height, na.rm = TRUE), # average height across exams
+    BMI    = mean(BMI, na.rm = TRUE), # average BMI
+    Age    = mean(Age, na.rm = TRUE),   # average age per person
+    n_studies = dplyr::n(), 
+    Liv = as.numeric(any(LiverPrior == 1)),
+    Port = as.numeric(any(PortalHypertensionPrior == 1)), 
+    Lip = as.numeric(any(LipomaPrior == 1)),
+    Cat = as.numeric(any(CataractPrior == 1)),
+    Oa = as.numeric(any(OaPrior == 1)),
+    AscI = as.numeric(any(AscitesAfter == 1)),
+    VarI = as.numeric(any(VaricesAfter == 1)),
+    CatI = as.numeric(any(CataractAfter == 1)),
+    LipI = as.numeric(any(LipomaAfter == 1)),
+    OaI = as.numeric(any(OaAfter == 1)),
+    FI = as.numeric(any(FractureAfter == 1)),
+    Di = mean(Diameter, na.rm = TRUE)
+  )
+
+table_1 <- pv_people %>%
+  tbl_summary(
+    include = c(Sex, Race, Age, Height, BMI, n_studies, Liv, Port, Oa, Lip),
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({sd})", n_studies ~ "{median} ({min}, {max})"),
+    label = list(Height = "Height (cm)", BMI = "BMI (kg/m2)", n_studies = "Number of Exams", Liv = "Liver Disease", Port = "Portal Hypertension", Lip = "Falsification Endpoint: Lipoma", Oa = "Falsification Endpoint: Osteoarthritis")) %>%
+  modify_caption("Table 1. Baseline Characteristics of Cohort")
+table_1
+
+
+liver_people <- pv_people[which(pv_people$Liv == 1),]
+table_2 <- liver_people %>%
+  tbl_summary(
+    include = c(Sex, Race, Age, Height, BMI, n_studies, AscI, VarI, LipI, OaI),
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({sd})", n_studies ~ "{median} ({min}, {max})"),
+    label = list(Height = "Height (cm)", BMI = "BMI (kg/m2)", n_studies = "Number of Exams*", AscI = "Incident - Ascites", VarI = "Incident - Varices", LipI = "Incident - Lipoma", OaI = "Incident - Osteoarthritis"))%>%
+  modify_caption("Table 2. Baseline Characteristics of Those with Prevalent Liver Disease")
+table_2
+
+```
+# 1. Portal Vein Diameter
+## Diameter Summary Stats
+```{r}
+print("Number of entries")
+dim(pv_clean)[1]
+print("Number of unique participants")
+length(unique(pv_clean$PMBBID))
+print("Mean portal vein diameter")
+mean(pv_clean$Diameter)
+print("Confidence Interval")
+t.test(pv_clean$Diameter)$conf.int
+
+############### Histogram of Portal Vein Diameter ##################
+ggplot(pv_clean, aes(x = Diameter)) +
+  geom_histogram(binwidth = 1, fill = "#011F5B", color = "black") +
+  labs(
+    x = "Portal Vein Diameter (mm)",
+    y = "Count",
+    title = NULL
+  ) +
+  geom_vline(aes(xintercept = mean(Diameter, na.rm = TRUE)),
+             color = "#990000", linewidth = 1.5, linetype = "solid")+
+  scale_x_continuous(breaks = breaks_extended(n = 15))+
+  theme_minimal(base_size = 20) 
+
+```
+
+## Comparison to Manual Review
+```{r}
+#| message: false
+#| warning: false
+# by hand measurements
+acc.num <- read.csv("FILENAME")
+byhandmeas <- c(17.4, NA, 16.4, NA, 20.9, NA, NA, 15, NA, 15.3, 18.4, 11.7, NA, 20.3, 13.7, 21.5, 13.4, 17.9, 11.7, 10.1, 14.2, 18.6, 16.8, 11.5, NA, 14.8, 14.0, 11.7, 16, 13.7, 14.9, 12.2, 6.3, 13.7, 13.7, 14.7, 15.2, 12.7, 17.2, 14.5, 13.1, 15.2, 19.2, 13.1, 11.8, 11.0, 10.5, 19.9, 10.0, NA, 14.6, 11.7, 11.2, 13.1, 12.9, 18.0, 15.2, 12.7, 8.4, 14.7, 15.9, 6.3, NA, 8.8, 10.8, 7.4, 11.6, NA, 15.0, 12.4, 14.0, 15.3, 23.3, 13.0, 14.8, 11.1, 16.4, 12.3, 13.3, 10.6, 11.6, NA, 13.0, NA, 15.1, 17.6, 13.0, NA, 9.5, 14.5, 14.2, 13.5, 14.1, 13.0, NA, 14.6, 15.0, 13, 13.8, 9.1)
+as.data.frame(cbind(acc = acc.num[,1], byhandmeas)) -> byhand
+rm(acc.num, byhandmeas)
+
+# add automated max
+byhand <- cbind(byhand, ts_diameter = pv_clean[match(byhand$acc, pv_clean$acc),]$Diameter, exam = pv_clean[match(byhand$acc, pv_clean$acc),]$Exam)
+byhand <- cbind(byhand, delta = (byhand[,2] - byhand[,3]))
+
+#'ratings' is a dataframe with subjects in rows and pv diameter in columns
+ratings <- byhand[,c(2,3)]
+colnames(ratings) <- c("ByHand", "VMTK")
+res <- psych::ICC(ratings)
+res
+
+cor.test(byhand[,2], byhand[,3])
+
+# Figure 
+## Set common limits so x and y axes are identical
+byhand$exam <- as.factor(byhand$exam)
+
+lims <- range(c(byhand$byhandmeas, byhand$ts_diameter), na.rm = TRUE)
+
+ggplot(byhand, aes(x = byhandmeas,
+                   y = ts_diameter,
+                   color = exam,
+                   shape = exam)) +
+  geom_point(size = 2.5, stroke = 1) +
+  # Optional 45-degree reference line
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_x_continuous(limits = lims, expand = expansion(mult = 0.02)) +
+  scale_y_continuous(limits = lims, expand = expansion(mult = 0.02)) +
+  coord_equal() +
+  scale_color_manual(
+    values = c(
+      "CT Chest With Contrast"          = "#990000", # Penn Red
+      "CT Chest Without Contrast"       = "#011F5B", # Penn Blue
+      "CT Abd/Pelvis With Contrast"     = "#990000", # Penn Red
+      "CT Abd/Pelvis Without Contrast"  = "#011F5B"  # Penn Blue
+    )
+  ) +
+  scale_shape_manual(
+    values = c(
+      "CT Chest With Contrast"          = 4, # x
+      "CT Chest Without Contrast"       = 4, # x
+      "CT Abd/Pelvis With Contrast"     = 1, # open circle
+      "CT Abd/Pelvis Without Contrast"  = 1  # open circle
+    )
+  ) +
+  labs(
+    x = "Manual Measurement",
+    y = "Automated Measurement",
+    color = "Exam",
+    shape = "Exam"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    legend.position = "right",
+    legend.box = "vertical"
+  )
+
+
+ggplot(byhand, aes(x = delta)) +
+  geom_histogram(binwidth = 1, fill = "#011F5B", color = "black") +
+  labs(
+    x = "Difference: Manual - Automated (mm)",
+    y = "Count",
+    title = NULL
+  ) +
+  geom_vline(aes(xintercept = 0),
+             color = "#990000", linewidth = 1.5, linetype = "solid")+
+  scale_x_continuous(breaks = breaks_extended(n = 15))+
+  theme_minimal(base_size = 20) 
+
+
+```
+
+ 
+### Bland-Altman
+
+```{r}
+
+make_ba_icc_plot <- function(data,
+                             col1, col2,
+                             short1, short2,
+                             meas_name,
+                             panel_title,
+                             pad_mult = 0.85,
+                             color_var = NULL) {
+
+  # 1. Extract and clean data ---------------------------------------
+  df <- data[, c(col1, col2)]
+  names(df) <- c("m1", "m2")
+  keep <- complete.cases(df)
+
+  df <- df[keep, , drop = FALSE]
+
+  df_ba <- data.frame(
+    mean_suv = (df$m1 + df$m2) / 2,
+    diff_suv = df$m2 - df$m1
+  )
+
+  # carry over color var (e.g., exam) in the SAME rows we kept
+  if (!is.null(color_var)) {
+    df_ba[[color_var]] <- data[[color_var]][keep]
+  }
+
+  n    <- nrow(df_ba)
+  dfres <- n - 1
+
+  # 2. Bland–Altman statistics --------------------------------------
+  bias    <- mean(df_ba$diff_suv)
+  sd_diff <- sd(df_ba$diff_suv)
+
+  se_bias <- sd_diff / sqrt(n)
+  tcrit   <- qt(0.975, df = dfres)
+  bias_lo <- bias - tcrit * se_bias
+  bias_hi <- bias + tcrit * se_bias
+
+  loa_low  <- bias - 1.96 * sd_diff
+  loa_high <- bias + 1.96 * sd_diff
+
+  # 3. ICC (two-way, absolute agreement, single measurements) -------
+  icc_obj   <- irr::icc(df, model = "twoway", type = "agreement", unit = "single")
+  icc_value <- icc_obj$value
+  icc_p     <- icc_obj$p.value
+
+  # 4. Label text ---------------------------------------------------
+  label_text <- sprintf(
+    "Bias = %.2f (95%% CI %.2f to %.2f)\nLoA = %.2f to %.2f\nICC = %.2f (p = %.3g)",
+    bias, bias_lo, bias_hi,
+    loa_low, loa_high,
+    icc_value, icc_p
+  )
+
+  # 5. Y-limits and padding so text is above points -----------------
+  y_top    <- max(df_ba$diff_suv, na.rm = TRUE)
+  y_bottom <- min(df_ba$diff_suv, na.rm = TRUE)
+  pad      <- pad_mult * (y_top - y_bottom)
+
+  y_max_plot <- max(loa_high, y_top) + pad
+  y_min_plot <- min(loa_low,  y_bottom)
+
+  # 6. Axis labels --------------------------------------------------
+  x_lab <- sprintf("Mean of %s and %s", short1, short2)
+  y_lab <- sprintf("Difference (%s \u2212 %s)", short2, short1)
+
+  # 7. Build plot ---------------------------------------------------
+  if (!is.null(color_var)) {
+    p <- ggplot(df_ba, aes(x = mean_suv, y = diff_suv, color = .data[[color_var]]))
+  } else {
+    p <- ggplot(df_ba, aes(x = mean_suv, y = diff_suv))
+  }
+
+  p <- p +
+    geom_point(alpha = 1, size = 5) +
+    geom_hline(yintercept = bias,     linewidth = 1) +
+    geom_hline(yintercept = loa_low,  linetype = "dashed") +
+    geom_hline(yintercept = loa_high, linetype = "dashed") +
+    annotate(
+      "text",
+      x     = min(df_ba$mean_suv, na.rm = TRUE),
+      y     = y_max_plot - pad/3,
+      label = label_text,
+      hjust = 0,
+      vjust = 1,
+      size  = 5
+    ) +
+    coord_cartesian(ylim = c(y_min_plot, y_max_plot)) +
+    labs(
+      x = x_lab,
+      y = y_lab,
+      color = color_var
+    ) +
+    theme_classic(base_size = 24) +
+    theme(
+      axis.title = element_text(face = "bold"),
+      axis.text  = element_text(color = "black"),
+    )
+
+  return(p)
+}
+
+
+## ------------------------------------------------------------------
+## Apply to your 4 combinations
+## ------------------------------------------------------------------
+# 1) Liver: Parsed Mean Liver SUV vs Re-measured Mean Liver SUV
+p <- make_ba_icc_plot(
+  data        = byhand,
+  col1        = "byhandmeas",
+  col2        = "ts_diameter",
+  short1      = "Manual",
+  short2      = "Automated",
+  meas_name   = "Portal Vein Diameter",
+  color_var   = "exam"
+)
+
+
+## ------------------------------------------------------------------
+## Print plots (one by one)
+## ------------------------------------------------------------------
+p +
+  aes(shape = exam, color = exam) +
+  scale_color_manual(values = c(
+    "CT Abd/Pelvis With Contrast"    = "#990000",
+    "CT Abd/Pelvis Without Contrast" = "#011F5B",
+    "CT Chest With Contrast"         = "#990000",
+    "CT Chest Without Contrast"      = "#011F5B"
+  )) +
+  scale_shape_manual(values = c(
+    "CT Abd/Pelvis With Contrast"    = 1,  # open circle
+    "CT Abd/Pelvis Without Contrast" = 1,
+    "CT Chest With Contrast"         = 4,  # x
+    "CT Chest Without Contrast"      = 4
+  ))
+
+```
+
+### TOST
+
+```{r}
+
+## ------------------------------------------------------------------
+## Helper: safely convert p-values that might be printed like "< 0.001"
+## ------------------------------------------------------------------
+.as_num_p <- function(x) {
+  x_chr <- as.character(x)
+  x_chr <- gsub("<", "", x_chr)
+  x_chr <- gsub(" ", "", x_chr)
+  suppressWarnings(as.numeric(x_chr))
+}
+
+## ------------------------------------------------------------------
+## Helper: Paired TOST with percent-based bounds
+##
+## pct_delta is a proportion (0.10 = 10%, 0.30 = 30%)
+## Bounds are set as ± pct_delta * mean(method2),
+## where method2 is the "reference" (re-measured) method.
+## ------------------------------------------------------------------
+run_tost_paired_pct <- function(data,
+                                col1, col2,
+                                pct_delta,          # e.g. 0.10 or 0.30
+                                comparison_label,
+                                alpha = 0.05) {
+  # Extract paired data
+  x <- data[[col1]]  # method 1 (e.g., automated)
+  y <- data[[col2]]  # method 2 (manual/reference)
+  ok <- complete.cases(x, y)
+  x <- x[ok]
+  y <- y[ok]
+
+  n   <- length(x)
+  m1  <- mean(x)
+  m2  <- mean(y)
+  sd1 <- sd(x)
+  sd2 <- sd(y)
+  r12 <- if (n > 1) cor(x, y) else NA_real_
+
+  # Percent-based raw bounds, relative to mean of reference method (m2)
+  delta_raw  <- pct_delta * m2
+  low_bound  <- -delta_raw
+  high_bound <-  delta_raw
+
+  # Run TOST from summary stats (paired design, raw-unit bounds)
+  res <- TOSTER::tsum_TOST(
+    m1            = m1,
+    sd1           = sd1,
+    n1            = n,
+    m2            = m2,
+    sd2           = sd2,
+    n2            = n,
+    r12           = r12,
+    paired        = TRUE,
+    hypothesis    = "EQU",
+    eqb           = c(low_bound, high_bound),
+    eqbound_type  = "raw",
+    alpha         = alpha
+  )
+
+  # TOST table has rows: "t-test", "TOST Lower", "TOST Upper"
+  tost_tab <- res$TOST
+
+  p1_raw <- tost_tab["TOST Lower", "p.value"]
+  p2_raw <- tost_tab["TOST Upper", "p.value"]
+
+  p1 <- .as_num_p(p1_raw)
+  p2 <- .as_num_p(p2_raw)
+
+  t1 <- tost_tab["TOST Lower", "t"]
+  t2 <- tost_tab["TOST Upper", "t"]
+  df <- tost_tab["TOST Lower", "df"]
+
+  # Overall equivalence decision: both one-sided tests must be significant
+  equiv <- (p1 < alpha) & (p2 < alpha)
+
+  # Same sign convention as Bland–Altman (method2 − method1)
+  mean_diff <- m2 - m1
+
+  out <- data.frame(
+    comparison        = comparison_label,
+    n                 = n,
+    mean_method1      = m1,
+    mean_method2      = m2,
+    mean_diff         = mean_diff,
+    pct_delta         = pct_delta,
+    eqbound_low_raw   = low_bound,
+    eqbound_high_raw  = high_bound,
+    t_lower           = as.numeric(t1),
+    p_lower           = p1,
+    t_upper           = as.numeric(t2),
+    p_upper           = p2,
+    df                = as.numeric(df),
+    tost_p_overall    = max(p1, p2, na.rm = TRUE),
+    equivalence       = ifelse(equiv, "equivalent", "not equivalent"),
+    stringsAsFactors  = FALSE
+  )
+
+  return(out)
+}
+
+## ------------------------------------------------------------------
+## Define your comparisons + percent bounds
+## ------------------------------------------------------------------
+tost_specs <- list(
+  list(
+    col1  = "ts_diameter",
+    col2  = "byhandmeas",
+    label = "Portal Vein Diameter (Automated vs Manual)",
+    pct   = 0.12
+  )
+)
+
+## ------------------------------------------------------------------
+## Run TOST
+## ------------------------------------------------------------------
+tost_results <- do.call(
+  rbind,
+  lapply(tost_specs, function(sp) {
+    run_tost_paired_pct(
+      data             = byhand,
+      col1             = sp$col1,
+      col2             = sp$col2,
+      pct_delta        = sp$pct,
+      comparison_label = sp$label
+    )
+  })
+)
+
+tost_results
+
+
+```
+
+
+## Univariate Modeling
+
+### Sex
+```{r}
+#######################################
+# data subset 
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, Sex, PMBBID) %>%  
+  drop_na()
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Sex + (1 | PMBBID), data = tmp))
+res
+
+#######################################
+# Table
+#######################################
+table_3<- 
+  pv_clean  %>% 
+  tbl_summary(
+    include= c(Diameter), by = Sex)
+
+table_3
+
+#######################################
+# Histogram
+#######################################
+
+ggplot(pv_clean, aes(x = Diameter, fill = Sex)) +
+  geom_histogram(
+    binwidth = 1,
+    color = "black",
+    alpha = 0.5,   # adjust transparency
+    position = "identity"
+  ) +
+  scale_fill_manual(
+    values = c("Male" = "#011F5B", "Female" = "#990000")
+  ) +
+  geom_vline(
+    aes(xintercept = mean(pv_clean[Sex == "Male", Diameter], na.rm = TRUE)),
+    color = "#011F5B",
+    linewidth = 1.2,
+    linetype = "solid"
+  ) +
+  geom_vline(
+    aes(xintercept = mean(pv_clean[Sex == "Female", Diameter], na.rm = TRUE)),
+    color = "#990000",
+    linewidth = 1.2,
+    linetype = "solid"
+  ) +
+  scale_x_continuous(breaks = breaks_extended(n = 15))+
+  labs(
+    x = "Portal Vein Diameter (mm)",
+    y = "Count",
+    fill = "Sex",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 20)+
+  theme(legend.position = "none")
+
+#######################################
+# Boxplot
+#######################################
+
+ggplot(pv_clean, aes(x = Sex, y = Diameter, fill = Sex)) +
+  geom_boxplot() +
+  scale_fill_manual(
+    values = c(
+      "Female" = "#990000",  
+      "Male" = "#011F5B"    )
+  ) +
+  scale_y_continuous(
+    name = "Diameter (mm)",
+    breaks = seq(0, 50, by = 2),   # tick marks every 2 units
+    minor_breaks = seq(0, 50, by = 1) # lighter grid lines every 1 unit
+  ) +
+  labs(
+    x = NULL,
+    y = "Maximum Portal Vein Diameter (mm)",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 20) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+### Age
+```{r}
+
+#######################################
+# data subset
+#######################################
+
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, Age, PMBBID) %>%  
+  drop_na()
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Age+ (1 | PMBBID), data = tmp))
+res
+
+#######################################
+# Histogram
+#######################################
+# dichotomize age at or below 60 compared to greater than 60 
+pv_clean <- pv_clean %>%
+  mutate(AgeGroup = if_else(Age <= 60, "≤ 60 years", "> 60 years"))
+
+ggplot(pv_clean |> filter(!is.na(Diameter) & !is.na(AgeGroup)),
+       aes(x = Diameter, fill = AgeGroup)) +
+  geom_histogram(
+    binwidth = 1,
+    color = "black",
+    alpha = 0.5,
+    position = "identity"
+  ) +
+  scale_fill_manual(
+    values = c("≤ 60 years" = "#011F5B", "> 60 years" = "#990000")
+  ) +
+  geom_vline(
+    aes(xintercept = mean(Diameter[Age <= 60], na.rm = TRUE)),
+    color = "#011F5B",
+    linewidth = 1.2,
+    linetype = "solid"
+  ) +
+  geom_vline(
+    aes(xintercept = mean(Diameter[Age > 60], na.rm = TRUE)),
+    color = "#990000",
+    linewidth = 1.2,
+    linetype = "solid"
+  ) +
+  scale_x_continuous(breaks = breaks_extended(n = 15)) +
+  labs(
+    x = "Portal Vein Diameter (mm)",
+    y = "Count",
+    fill = "Age Group"
+  ) +
+  theme_minimal(base_size = 20)+
+  theme(legend.position = "none")
+
+```
+
+### Height
+```{r}
+
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, Height, PMBBID) %>%  
+  drop_na()
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Height + (1 | PMBBID), data = tmp))
+res
+
+```
+
+### BMI
+```{r}
+
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, BMI, PMBBID) %>%  
+  drop_na()
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ BMI + (1 | PMBBID), data = tmp))
+res
+
+```
+
+### Race
+```{r}
+
+#######################################
+# data subset 
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, Race, PMBBID) %>%  
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% # remove since < 10 entries
+  drop_na() %>%
+  mutate(
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White")
+    )
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Race + (1 | PMBBID), data = tmp))
+res
+
+#######################################
+# Table
+#######################################
+table_2<- 
+  tmp  %>% 
+  tbl_summary(
+    include= c(Diameter), by = Race)
+
+table_2
+
+#######################################
+# Boxplots
+#######################################
+
+ggplot(tmp, aes(x = Race, y = Diameter)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    name = "Portal Vein Diameter (mm)",
+    breaks = seq(0, 50, by = 2),   # tick marks every 2 units
+    minor_breaks = seq(0, 50, by = 1) # lighter grid lines every 1 unit
+  ) +
+  labs(
+    x = NULL,
+    y = "Month",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 18) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+
+### Year
+```{r}
+
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, Year, PMBBID) %>%  
+  drop_na() %>%
+  mutate(
+    Year = factor(Year))
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Year + (1 | PMBBID), data = tmp))
+res
+
+#######################################
+# Table
+#######################################
+table_2<- 
+  tmp  %>% 
+  tbl_summary(
+    include= c(Diameter), by = Year)
+
+table_2
+
+#######################################
+# Boxplot
+#######################################
+
+ggplot(tmp, aes(x = Year, y = Diameter)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    name = "Portal Vein Diameter (mm)",
+    breaks = seq(0, 50, by = 2),   # tick marks every 2 units
+    minor_breaks = seq(0, 50, by = 1) # lighter grid lines every 1 unit
+  ) +
+  labs(
+    x = NULL,
+    y = "Site",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 18) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+
+### Month
+```{r}
+
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, Month, PMBBID) %>%  
+  drop_na() %>%
+  mutate(
+    Month = factor(Month))
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Month + (1 | PMBBID), data = tmp))
+res
+
+#######################################
+# Table
+#######################################
+table_2<- 
+  tmp  %>% 
+  tbl_summary(
+    include= c(Diameter), by = Month)
+
+table_2
+
+#######################################
+# Boxplot
+#######################################
+ggplot(tmp, aes(x = Month, y = Diameter)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    name = "Portal Vein Diameter (mm)",
+    breaks = seq(0, 50, by = 2),   # tick marks every 2 units
+    minor_breaks = seq(0, 50, by = 1) # lighter grid lines every 1 unit
+  ) +
+  labs(
+    x = NULL,
+    y = "Month",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 18) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+
+### Exam
+```{r}
+
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Exam, Diameter, PMBBID) %>%
+  drop_na() %>%
+  mutate(
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast")
+  )
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Exam + (1 | PMBBID), data = tmp))
+res
+
+#######################################
+# Table
+#######################################
+table_3<- 
+  tmp  %>% 
+  tbl_summary(
+    include= c(Diameter), by = Exam)
+
+table_3
+
+#######################################
+# Boxplot
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Exam, Diameter, PMBBID, Date) %>%
+  drop_na() %>%
+  mutate(
+    Exam = factor(Exam),
+#    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast")
+  ) %>%
+  group_by(PMBBID) %>%
+  slice_min(Date, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+
+ggplot(tmp, aes(x = Exam, y = Diameter, fill = Exam)) +
+  geom_boxplot() +
+  scale_fill_manual(
+    values = c(
+      "CT Abd/Pelvis Without Contrast" = "#990000",  
+      "CT Abd/Pelvis With Contrast" = "#E03C31",      
+      "CT Chest Without Contrast" = "#011F5B",  
+      "CT Chest With Contrast" = "#7DADD3"      
+    )
+  ) +
+  scale_x_discrete(labels = c("CT Abd/Pelvis Without Contrast" = "CT Abd/Pelvis \n Without Contrast \n N = 2,052", "CT Abd/Pelvis With Contrast" = "CT Abd/Pelvis \n With Contrast \n N = 5,289", "CT Chest Without Contrast" = "CT Chest \n Without Contrast \n N = 6,569", "CT Chest With Contrast" = "CT Chest \n With Contrast \n N = 5,835")) +
+  scale_y_continuous(
+    name = "Portal Vein Diameter (mm)",
+    breaks = seq(0, 50, by = 2),   # tick marks every 2 units
+    minor_breaks = seq(0, 50, by = 1) # lighter grid lines every 1 unit
+  ) +
+  labs(
+    x = NULL,
+    y = "Maximum Portal Vein Diameter (mm)",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 18) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+#### T-tests
+
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Exam, Diameter, PMBBID, Date) %>%
+  drop_na() %>%
+  mutate(
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast")
+  ) %>%
+  group_by(PMBBID) %>%
+  slice_min(Date, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+
+t.test(tmp[which(tmp$Exam == "CT Abd/Pelvis With Contrast"),]$Diameter, tmp[which(tmp$Exam %in% c("CT Abd/Pelvis Without Contrast")),]$Diameter)
+
+t.test(tmp[which(tmp$Exam == "CT Abd/Pelvis With Contrast"),]$Diameter, tmp[which(tmp$Exam %in% c("CT Chest With Contrast")),]$Diameter)
+
+t.test(tmp[which(tmp$Exam == "CT Abd/Pelvis With Contrast"),]$Diameter, tmp[which(tmp$Exam %in% c("CT Chest Without Contrast")),]$Diameter)
+
+#
+
+t.test(tmp[which(tmp$Exam == "CT Abd/Pelvis Without Contrast"),]$Diameter, tmp[which(tmp$Exam %in% c("CT Chest With Contrast")),]$Diameter)
+
+t.test(tmp[which(tmp$Exam == "CT Abd/Pelvis Without Contrast"),]$Diameter, tmp[which(tmp$Exam %in% c("CT Chest Without Contrast")),]$Diameter)
+
+#
+
+t.test(tmp[which(tmp$Exam == "CT Chest With Contrast"),]$Diameter, tmp[which(tmp$Exam %in% c("CT Chest Without Contrast")),]$Diameter)
+
+```
+
+#### Contrast Presence
+```{r}
+
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Contrast, Diameter, PMBBID) %>%
+  drop_na() %>%
+  dplyr::mutate(
+    Contrast = factor(Contrast)  )
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Contrast + (1 | PMBBID), data = tmp))
+res
+
+#######################################
+# Table
+#######################################
+table_2<- 
+  tmp  %>% 
+  tbl_summary(
+    include= c(Diameter), by = Contrast)
+
+table_2
+
+#######################################
+# Boxplot
+#######################################
+ggplot(tmp, aes(x = Contrast, y = Diameter)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    name = "Portal Vein Diameter (mm)",
+    breaks = seq(0, 50, by = 2),   # tick marks every 2 units
+    minor_breaks = seq(0, 50, by = 1) # lighter grid lines every 1 unit
+  ) +
+  labs(
+    x = NULL,
+    y = "Contrast",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 18) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+
+#### Contrast Category
+
+```{r}
+
+#######################################
+# data subset 
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Contrast_Category, Diameter, PMBBID) %>%
+  drop_na() %>%
+  mutate(
+    Contrast_Category = factor(Contrast_Category),
+    Contrast_Category = fct_relevel(Contrast_Category, "No Contrast")
+  )
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Contrast_Category + (1 | PMBBID), data = tmp))
+res
+
+#######################################
+# Table
+#######################################
+table_2<- 
+  tmp  %>% 
+  tbl_summary(
+    include= c(Diameter), by = Contrast_Category)
+
+table_2
+
+#######################################
+# Boxplot
+#######################################
+
+ggplot(pv_clean, aes(x = Contrast_Category, y = Diameter)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    name = "Portal Vein Diameter (mm)",
+    breaks = seq(0, 50, by = 2),   # tick marks every 2 units
+    minor_breaks = seq(0, 50, by = 1) # lighter grid lines every 1 unit
+  ) +
+  labs(
+    x = NULL,
+    y = "Site",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 18) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+
+### Site
+```{r}
+
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Site, Diameter, PMBBID) %>%
+  drop_na() %>%
+  mutate(
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient")
+  )
+
+#######################################
+# Univariate glm, mixed model
+#######################################
+res <- summary(lmer(Diameter ~ Site + (1 | PMBBID), data = tmp))
+res
+
+#######################################
+# Table
+#######################################
+table_2<- 
+  tmp  %>% 
+  tbl_summary(
+    include= c(Diameter), by = Site)
+
+table_2
+
+#######################################
+# Boxplot
+#######################################
+ggplot(pv_clean, aes(x = Site, y = Diameter)) +
+  geom_boxplot() +
+  scale_y_continuous(
+    name = "Portal Vein Diameter (mm)",
+    breaks = seq(0, 50, by = 2),   # tick marks every 2 units
+    minor_breaks = seq(0, 50, by = 1) # lighter grid lines every 1 unit
+  ) +
+  labs(
+    x = NULL,
+    y = "Site",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 18) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+## Multivariate
+
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, Contrast_Category, Contrast, Year, Month) %>%
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  drop_na() %>%
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    Contrast_Category = factor(Contrast_Category),
+    Contrast_Category = fct_relevel(Contrast_Category, "No Contrast"),
+    Contrast = factor(Contrast),
+    Year = factor(Year),
+    Month = factor(Month))
+
+#######################################
+# Multivariate glm, mixed model
+#######################################
+m <- lmer(Diameter ~ Sex + Age + Height + BMI + Race + Site + Exam + Year + Month +(1 | PMBBID), data = tmp)
+res <- summary(m)
+res
+
+#######################################
+# Confidence Intervals
+#######################################
+tab <- broom.mixed::tidy(
+  m,
+  effects = "fixed",
+  conf.int = TRUE,
+  conf.level = 0.95
+) %>%
+  mutate(
+    estimate  = round(estimate, 3),
+    std.error = round(std.error, 3),
+    conf.low  = round(conf.low, 3),
+    conf.high = round(conf.high, 3)
+  )
+
+tab
+
+#######################################
+# Forest Plot -  All Terms
+#######################################
+tidy_fit <- broom::tidy(m) %>%
+  filter(term != "(Intercept)", effect == "fixed")            # drop intercept
+
+# make age 10 years instaed of 1
+tidy_fit[grep("Age", tidy_fit$term),]$estimate <- tidy_fit[grep("Age", tidy_fit$term),]$estimate*10
+tidy_fit[grep("Age", tidy_fit$term),]$std.error <- tidy_fit[grep("Age", tidy_fit$term),]$std.error*10
+
+# add confidence bounds
+tidy_fit <- tidy_fit %>% 
+  mutate(
+    LCL = estimate - 1.96*std.error,
+    UCL = estimate + 1.96*std.error
+  )
+
+# term make factor
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# plot everything
+ggplot(tidy_fit, aes(x = term, y = estimate)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_flip() +
+  labs(
+    x = "",
+    y = "Effect Estimate",
+    title = "Effect Size Forest Plot"
+  ) +
+  theme_bw()
+
+#######################################
+# Forest Plot - Terms of Interest
+#######################################
+# remove things don't want
+tidy_fit <- tidy_fit %>% filter(!grepl("^Year", term))
+tidy_fit <- tidy_fit %>% filter(!grepl("^Month", term))
+tidy_fit <- tidy_fit %>% filter(grepl("fixed", effect))
+
+# fix names
+tidy_fit$term <- c("Sex: Male", "Age (10 years)", "Height (cm)", "BMI (kg/m2)", "Race: Asian", "Race: Black or African American", "Race: More than One", "Race: Unknown or Not Reported", "Site: Emergency Department", "Site: Inpatient", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest With Contrast", "Exam: CT Chest Without Contrast")
+
+# add reference values
+tidy_fit <- bind_rows(
+  tidy_fit,
+  tibble(effect = NA,group = NA,term = "Site: Outpatient (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,LCL = 0,UCL = 0 ), 
+  tibble(effect = NA,group = NA,term = "Sex: Female (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,LCL = 0,UCL = 0),
+  tibble(effect = NA,group = NA,term = "Race: White (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,LCL = 0,UCL = 0),
+  tibble(effect = NA,group = NA,term = "Exam: CT Abd/Pelvis Without Contrast (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,LCL = 0,UCL = 0 )
+)
+
+# re-adjust order of terms
+tidy_fit$term <- factor(tidy_fit$term, levels = c("Site: Emergency Department", "Site: Inpatient","Site: Outpatient (reference)", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest Without Contrast", "Exam: CT Chest With Contrast", "Exam: CT Abd/Pelvis Without Contrast (reference)", "Race: Unknown or Not Reported", "Race: More than One", "Race: Black or African American", "Race: Asian", "Race: White (reference)", "Sex: Male", "Sex: Female (reference)", "BMI (kg/m2)", "Height (cm)", "Age (10 years)"))
+
+# add flag for reference values for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add flag for significance for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+# plot
+ggplot(tidy_fit, aes(x = term, y = estimate, color = ref_flag)) +
+  geom_point(size = 2) + # use 5 for making figure for manuscript
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_flip() +
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Effect Size"  ) +
+  theme_minimal(base_size = 12) + # use 24 for making figure for manuscript
+  theme(legend.position = "none")   
+  
+
+```
+# 2. Prevalent Liver Disease and Portal HTN
+
+## Liver Disease
+
+Because prevalent liver disease was effectively constant within individuals and most contributed only a single examination, patient-level random intercept models were numerically unstable and non-informative. Therefore, we used population-average logistic regression with cluster-robust standard errors to account for repeated examinations.
+
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, Contrast_Category, LiverPrior) %>%
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  drop_na() %>%
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    Contrast_Category = factor(Contrast_Category),
+    Contrast_Category = fct_relevel(Contrast_Category, "No Contrast"),
+    LiverPrior = factor(LiverPrior))
+
+#######################################
+# Table
+#######################################
+
+tmp  %>% 
+  tbl_summary(
+    include= c(LiverPrior))
+
+#######################################
+# Univariate glm
+#######################################
+m <- glm(LiverPrior ~ Diameter, data = tmp, family = binomial(link = "logit"))
+res <- coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+res
+
+#######################################
+# Multivariate glm
+#######################################
+m <- glm(LiverPrior ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site, data = tmp, family = binomial(link = "logit"))
+res <- coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+res
+
+#######################################
+# Forest Plot
+#######################################
+
+# reformat and add confidence intervals
+tidy_fit <- broom::tidy(m) %>% 
+  dplyr::filter(term != "(Intercept)") %>%            # drop intercept
+  dplyr::mutate(
+    OR  = exp(estimate),
+    LCL = exp(estimate - 1.96*std.error),
+    UCL = exp(estimate + 1.96*std.error)
+  )
+
+# make age 10 years instaed of 1
+tidy_fit[grep("Age", tidy_fit$term),]$estimate <- tidy_fit[grep("Age", tidy_fit$term),]$estimate*10
+tidy_fit[grep("Age", tidy_fit$term),]$std.error <- tidy_fit[grep("Age", tidy_fit$term),]$std.error*10
+
+# make term a factor
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# rename terms
+tidy_fit$term <- c("Measured Portal Vein Diameter", "Age (10 years)", "Height (cm)", "BMI (kg/m2)", "Sex: Male", "Race: Asian", "Race: Black or African American", "Race: More than One", "Race: Unknown or Not Reported", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest With Contrast", "Exam: CT Chest Without Contrast", "Site: Emergency Department", "Site: Inpatient")
+
+# add reference values
+tidy_fit <- bind_rows(
+  tidy_fit,
+  tibble(effect = NA,group = NA,term = "Site: Outpatient (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1 ), 
+  tibble(effect = NA,group = NA,term = "Sex: Female (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1),
+  tibble(effect = NA,group = NA,term = "Race: White (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1),
+  tibble(effect = NA,group = NA,term = "Exam: CT Abd/Pelvis Without Contrast (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA, OR = 1,LCL = 1,UCL = 1 )
+)
+
+# more renaming
+tidy_fit$term <- factor(tidy_fit$term, levels = c("Site: Emergency Department", "Site: Inpatient","Site: Outpatient (reference)", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest Without Contrast", "Exam: CT Chest With Contrast", "Exam: CT Abd/Pelvis Without Contrast (reference)", "Race: Unknown or Not Reported", "Race: More than One", "Race: Black or African American", "Race: Asian", "Race: White (reference)", "Sex: Male", "Sex: Female (reference)", "BMI (kg/m2)", "Height (cm)", "Age (10 years)", "Measured Portal Vein Diameter"))
+
+# add reference flag for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add significance flag for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+# plot
+ggplot(tidy_fit, aes(x = term, y = OR, color = ref_flag)) +
+  geom_point(size = 2) + # use 5 for making figure for manuscript
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.6) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    # Penn Blue
+      "nonreference" = "#990000",  # Penn Red
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio"  ) +
+  theme_minimal(base_size = 12) + # use 24 for making figure for manuscript
+  theme(legend.position = "none")   # remove this if you want a legend
+
+# save for summary figure
+liv_tidy <- tidy_fit
+```
+
+## Portal HTN 
+
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, Contrast_Category, PortalHypertensionPrior) %>%
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  drop_na() %>%
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    Contrast_Category = factor(Contrast_Category),
+    Contrast_Category = fct_relevel(Contrast_Category, "No Contrast"),
+    PortalHypertensionPrior = factor(PortalHypertensionPrior))
+
+#######################################
+# Table
+#######################################
+
+tmp  %>% 
+  tbl_summary(
+    include= c(PortalHypertensionPrior))
+
+#######################################
+# Univariate glm
+#######################################
+m <- glm(PortalHypertensionPrior ~ Diameter, data = tmp, family = binomial(link = "logit"))
+res <- coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+res
+
+#######################################
+# Multivariate glm
+#######################################
+m <- glm(PortalHypertensionPrior ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site, data = tmp, family = binomial(link = "logit"))
+res <- coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+res
+
+#######################################
+# Forest Plot 
+#######################################
+
+# reformat and add confidence intervals
+tidy_fit <- broom::tidy(m) %>% 
+  dplyr::filter(term != "(Intercept)") %>%            # drop intercept
+  dplyr::mutate(
+    OR  = exp(estimate),
+    LCL = exp(estimate - 1.96*std.error),
+    UCL = exp(estimate + 1.96*std.error)
+  )
+
+# make term a factor
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# make age 10 years instaed of 1
+tidy_fit[grep("Age", tidy_fit$term),]$estimate <- tidy_fit[grep("Age", tidy_fit$term),]$estimate*10
+tidy_fit[grep("Age", tidy_fit$term),]$std.error <- tidy_fit[grep("Age", tidy_fit$term),]$std.error*10
+
+# rename terms
+tidy_fit$term <- c("Measured Portal Vein Diameter", "Age (10 years)", "Height (cm)", "BMI (kg/m2)", "Sex: Male", "Race: Asian", "Race: Black or African American", "Race: More than One", "Race: Unknown or Not Reported", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest With Contrast", "Exam: CT Chest Without Contrast", "Site: Emergency Department", "Site: Inpatient")
+
+# add reference values
+tidy_fit <- bind_rows(
+  tidy_fit,
+  tibble(effect = NA,group = NA,term = "Site: Outpatient (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1 ), 
+  tibble(effect = NA,group = NA,term = "Sex: Female (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1),
+  tibble(effect = NA,group = NA,term = "Race: White (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1),
+  tibble(effect = NA,group = NA,term = "Exam: CT Abd/Pelvis Without Contrast (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA, OR = 1,LCL = 1,UCL = 1 )
+)
+
+# more renaming
+tidy_fit$term <- factor(tidy_fit$term, levels = c("Site: Emergency Department", "Site: Inpatient","Site: Outpatient (reference)", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest Without Contrast", "Exam: CT Chest With Contrast", "Exam: CT Abd/Pelvis Without Contrast (reference)", "Race: Unknown or Not Reported", "Race: More than One", "Race: Black or African American", "Race: Asian", "Race: White (reference)", "Sex: Male", "Sex: Female (reference)", "BMI (kg/m2)", "Height (cm)", "Age (10 years)", "Measured Portal Vein Diameter"))
+
+
+# add reference flag for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add significance flag for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+# plot
+ggplot(tidy_fit, aes(x = term, y = OR, color = ref_flag)) +
+  geom_point(size = 2) + # use 5 for figure
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.6) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio"  ) +
+  theme_minimal(base_size = 12) + # use 24 for figure
+  theme(legend.position = "none")   # remove this if you want a legend
+
+# save for summary figure
+phtn_tidy <- tidy_fit
+```
+
+## Falsification Endpoint: Osteoarthritis 
+
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, Contrast_Category, OaPrior) %>%
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  drop_na() %>%
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    Contrast_Category = factor(Contrast_Category),
+    Contrast_Category = fct_relevel(Contrast_Category, "No Contrast"),
+    OaPrior = factor(OaPrior))
+
+#######################################
+# Table
+#######################################
+
+tmp  %>% 
+  tbl_summary(
+    include= c(OaPrior))
+
+
+#######################################
+# Univariate glm
+#######################################
+m <- glm(OaPrior ~ Diameter, data = tmp, family = binomial(link = "logit"))
+res <- coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+res
+
+#######################################
+# Multivariate glm
+#######################################
+m <- glm(OaPrior ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site, data = tmp, family = binomial(link = "logit"))
+res <- coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+res
+
+#######################################
+# Forest Plot
+#######################################
+
+# reformat and add confidence intervals
+tidy_fit <- broom::tidy(m) %>% 
+  dplyr::filter(term != "(Intercept)") %>%            # drop intercept
+  dplyr::mutate(
+    OR  = exp(estimate),
+    LCL = exp(estimate - 1.96*std.error),
+    UCL = exp(estimate + 1.96*std.error)
+  )
+
+# make term a factor
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# make age 10 years instaed of 1
+tidy_fit[grep("Age", tidy_fit$term),]$estimate <- tidy_fit[grep("Age", tidy_fit$term),]$estimate*10
+tidy_fit[grep("Age", tidy_fit$term),]$std.error <- tidy_fit[grep("Age", tidy_fit$term),]$std.error*10
+
+# rename terms
+tidy_fit$term <- c("Measured Portal Vein Diameter", "Age (10 years)", "Height (cm)", "BMI (kg/m2)", "Sex: Male", "Race: Asian", "Race: Black or African American", "Race: More than One", "Race: Unknown or Not Reported", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest With Contrast", "Exam: CT Chest Without Contrast", "Site: Emergency Department", "Site: Inpatient")
+
+# add reference values
+tidy_fit <- bind_rows(
+  tidy_fit,
+  tibble(effect = NA,group = NA,term = "Site: Outpatient (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1 ), 
+  tibble(effect = NA,group = NA,term = "Sex: Female (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1),
+  tibble(effect = NA,group = NA,term = "Race: White (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1),
+  tibble(effect = NA,group = NA,term = "Exam: CT Abd/Pelvis Without Contrast (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA, OR = 1,LCL = 1,UCL = 1 )
+)
+
+# more renaming
+tidy_fit$term <- factor(tidy_fit$term, levels = c("Site: Emergency Department", "Site: Inpatient","Site: Outpatient (reference)", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest Without Contrast", "Exam: CT Chest With Contrast", "Exam: CT Abd/Pelvis Without Contrast (reference)", "Race: Unknown or Not Reported", "Race: More than One", "Race: Black or African American", "Race: Asian", "Race: White (reference)", "Sex: Male", "Sex: Female (reference)", "BMI (kg/m2)", "Height (cm)", "Age (10 years)", "Measured Portal Vein Diameter"))
+
+
+# add reference flag for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add significance flag for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+# plot
+ggplot(tidy_fit, aes(x = term, y = OR, color = ref_flag)) +
+  geom_point(size = 2) + # use 5 for figure
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.6) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio"  ) +
+  theme_minimal(base_size = 12) + 
+  theme(legend.position = "none")   # remove this if you want a legend
+
+# save for summary figure
+oa_tidy <- tidy_fit
+```
+
+## Falsification Endpoint: Lipoma 
+
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, Contrast_Category, LipomaPrior) %>%
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  drop_na() %>%
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    Contrast_Category = factor(Contrast_Category),
+    Contrast_Category = fct_relevel(Contrast_Category, "No Contrast"),
+    LipomaPrior = factor(LipomaPrior))
+
+#######################################
+# Table
+#######################################
+
+tmp  %>% 
+  tbl_summary(
+    include= c(LipomaPrior))
+
+#######################################
+# Univariate glm
+#######################################
+m <- glm(LipomaPrior ~ Diameter, data = tmp, family = binomial(link = "logit"))
+res <- coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+res
+
+#######################################
+# Multivariate glm
+#######################################
+m <- glm(LipomaPrior ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site, data = tmp, family = binomial(link = "logit"))
+res <- coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+res
+
+#######################################
+# Forest Plot 
+#######################################
+
+# reformat and add confidence intervals
+tidy_fit <- broom::tidy(m) %>% 
+  dplyr::filter(term != "(Intercept)") %>%            # drop intercept
+  dplyr::mutate(
+    OR  = exp(estimate),
+    LCL = exp(estimate - 1.96*std.error),
+    UCL = exp(estimate + 1.96*std.error)
+  )
+
+# make term a factor
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# make age 10 years instaed of 1
+tidy_fit[grep("Age", tidy_fit$term),]$estimate <- tidy_fit[grep("Age", tidy_fit$term),]$estimate*10
+tidy_fit[grep("Age", tidy_fit$term),]$std.error <- tidy_fit[grep("Age", tidy_fit$term),]$std.error*10
+
+# rename terms
+tidy_fit$term <- c("Measured Portal Vein Diameter", "Age (10 years)", "Height (cm)", "BMI (kg/m2)", "Sex: Male", "Race: Asian", "Race: Black or African American", "Race: More than One", "Race: Unknown or Not Reported", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest With Contrast", "Exam: CT Chest Without Contrast", "Site: Emergency Department", "Site: Inpatient")
+
+# add reference values
+tidy_fit <- bind_rows(
+  tidy_fit,
+  tibble(effect = NA,group = NA,term = "Site: Outpatient (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1 ), 
+  tibble(effect = NA,group = NA,term = "Sex: Female (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1),
+  tibble(effect = NA,group = NA,term = "Race: White (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA,OR = 1, LCL = 1,UCL = 1),
+  tibble(effect = NA,group = NA,term = "Exam: CT Abd/Pelvis Without Contrast (reference)",estimate = 0,std.error = NA,statistic = NA,df = NA,p.value = NA, OR = 1,LCL = 1,UCL = 1 )
+)
+
+# more renaming
+tidy_fit$term <- factor(tidy_fit$term, levels = c("Site: Emergency Department", "Site: Inpatient","Site: Outpatient (reference)", "Exam: CT Abd/Pelvis With Contrast", "Exam: CT Chest Without Contrast", "Exam: CT Chest With Contrast", "Exam: CT Abd/Pelvis Without Contrast (reference)", "Race: Unknown or Not Reported", "Race: More than One", "Race: Black or African American", "Race: Asian", "Race: White (reference)", "Sex: Male", "Sex: Female (reference)", "BMI (kg/m2)", "Height (cm)", "Age (10 years)", "Measured Portal Vein Diameter"))
+
+
+# add reference flag for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add significance flag for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+# plot
+ggplot(tidy_fit, aes(x = term, y = OR, color = ref_flag)) +
+  geom_point(size = 2) + # use 5 for figure
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.6) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio"  ) +
+  theme_minimal(base_size = 12) + # use 24 for figure
+  theme(legend.position = "none")   # remove this if you want a legend
+
+# save for summary figure
+lipoma_tidy <- tidy_fit
+```
+## Summary Figure
+
+```{r}
+#######################################
+# With Falsification Endpoints
+#######################################
+
+# combine measured portal vein diameter ORs across diseases considered
+summary_tidy <- rbind(liv_tidy[1,], phtn_tidy[1,], oa_tidy[1,], lipoma_tidy[1,])
+summary_tidy[,1] <- c("Liver Disease", "Portal Hypertension", "Falsification Endpoint: Osteoarthritis", "Falsification Endpoint: Lipoma")
+
+# reorder
+summary_tidy$term <- factor(summary_tidy$term, levels = c("Falsification Endpoint: Lipoma", "Falsification Endpoint: Osteoarthritis", "Portal Hypertension","Liver Disease"))
+
+# plot
+ggplot(summary_tidy, aes(x = term, y = OR, color = ref_flag)) +
+  geom_point(size = 2) + # use 5 for figure
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.6) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio for Measured Portal Vein Diameter"  ) +
+  theme_minimal(base_size = 12) + # use 24 for figure
+  theme(legend.position = "none")   # remove this if you want a legend
+
+#######################################
+# With Table
+#######################################
+
+BASE_SIZE <- 22   # <- increase to 22–26 for figure export if needed
+
+df <- summary_tidy %>%
+  mutate(
+    term = factor(term, levels = c(
+      "Falsification Endpoint: Lipoma",
+      "Falsification Endpoint: Osteoarthritis",
+      "Portal Hypertension",
+      "Liver Disease"
+    ))
+  ) %>%
+  arrange(term) %>%
+  mutate(
+    # ---- 3 digit OR + CI ----
+    or_ci = sprintf("%.3f (%.3f–%.3f)", OR, LCL, UCL),
+
+    # ---- p formatting ----
+    p_txt = case_when(
+      is.na(p.value) ~ "",
+      p.value < 0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f", p.value)
+    )
+  )
+
+########################################
+# LEFT TABLE PANEL
+########################################
+p_table <- ggplot(df, aes(y = term)) +
+  geom_text(aes(x = 0, label = as.character(term)), hjust = 0, size = BASE_SIZE/3.5) +
+  geom_text(aes(x = 2.1, label = or_ci), hjust = 0, size = BASE_SIZE/3.5) +
+  geom_text(aes(x = 4.3, label = p_txt), hjust = 0, size = BASE_SIZE/3.5) +
+
+  annotate("text", x = 0,   y = Inf, label = "Outcome",
+           vjust = 1.4, fontface = "bold", size = BASE_SIZE/3.2, hjust = 0) +
+
+  annotate("text", x = 2.1, y = Inf, label = "OR (95% CI)",
+           vjust = 1.4, fontface = "bold", size = BASE_SIZE/3.2, hjust = 0) +
+
+  annotate("text", x = 4.3, y = Inf, label = "P",
+           vjust = 1.4, fontface = "bold", size = BASE_SIZE/3.2, hjust = 0) +
+
+  scale_x_continuous(limits = c(0, 5.5), expand = expansion(mult = c(0, 0))) +
+  theme_void(base_size = BASE_SIZE) +
+  theme(plot.margin = margin(5.5, 0, 5.5, 5.5))
+
+########################################
+# RIGHT FOREST PANEL
+########################################
+p_forest <- ggplot(df, aes(y = term, x = OR, color = ref_flag)) +
+  geom_point(size = BASE_SIZE/6) +
+  geom_errorbarh(aes(xmin = LCL, xmax = UCL), height = 0.25) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+
+  scale_x_log10() +
+
+  scale_color_manual(values = c(
+    "reference" = "#011F5B",
+    "nonreference" = "#990000",
+    "nonsignificant" = "gray"
+  )) +
+
+  labs(x = "Odds Ratio (log scale)", y = NULL) +
+
+  theme_minimal(base_size = BASE_SIZE) +
+  theme(
+    legend.position = "none",
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = margin(5.5, 5.5, 5.5, 0)
+  )
+
+########################################
+# COMBINE
+########################################
+p_table + p_forest + plot_layout(widths = c(1.5, 1))
+
+```
+
+# 3. Incident Varices and Ascites
+## Varices
+### Data
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, VaricesAfter, AscitesAfter, LiverPrior, VaricesPrior, AscitesPrior, VaricesFirstDate, AscitesFirstDate, Date, Death) %>%
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  dplyr::filter(LiverPrior == 1, VaricesPrior == 0) %>% # HAS LIVER DISEASE DOES NOT HAVE VARICES
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    VaricesAfter = factor(VaricesAfter),
+    AscitesAfter = factor(AscitesAfter),
+    LiverPrior = factor(LiverPrior),
+    VaricesPrior = factor(VaricesPrior),
+    AscitesPrior = factor(AscitesPrior),
+    VaricesFirstDate = as.Date(VaricesFirstDate),
+    AscitesFirstDate = as.Date(AscitesFirstDate),
+    Date = as.Date(Date),
+    Death = as.Date(Death)
+    ) %>%
+  group_by(PMBBID) %>%
+  slice_min(Date, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Table outcome x race as some of the numbers get pretty small
+table(tmp$Race, tmp$VaricesAfter)
+
+# Exclude as needed
+tmp <- tmp %>%
+  dplyr::filter(!Race %in% c("Asian", "More than One Race"))%>%
+  dplyr::mutate(Race = droplevels(Race))
+
+# Table outcome x race as some of the numbers get pretty small
+table(tmp$Race, tmp$VaricesAfter)  
+
+#######################################
+# Create Event 0/1 and Time to Event Variables
+#######################################
+
+# this is the last date in the phecode file so made it the censoring date
+cutoff <- as.Date("2024-09-23")
+
+# Add Event, EndDate, and Time to Event Variables
+tmp <- tmp %>%
+  mutate(
+  # event occurs only if varices happens before death and cutoff
+    Event = if_else(
+      VaricesAfter == 1 &
+      (is.na(Death) | VaricesFirstDate < Death) &
+      VaricesFirstDate <= cutoff,
+      1L, 0L
+    ),
+    # end of follow-up = earliest of varices, death, or cutoff
+    EndDate = pmin(
+      VaricesFirstDate,
+      Death,
+      cutoff,
+      na.rm = TRUE
+    ),
+    # time-to-event in days
+    TimeToEvent = as.numeric(EndDate - Date) )
+
+# make 01 option for Event
+tmp$Event01 <- ifelse(tmp$Event == "1", 1L, 0L)
+```
+
+### Univariate Cox
+```{r}
+#######################################
+# Univariate Cox Model
+#######################################
+
+cox1 <- coxph(Surv(TimeToEvent, Event01) ~ Diameter,
+              data = tmp)
+summary(cox1)
+
+# test for non-proportionality - is the log hazard ratio constant over time?
+ph_test <- cox.zph(cox1)
+ph_test
+
+```
+
+### Univariate Cox + Adjustments
+```{r}
+#######################################
+# Univariate Cox + Term for Time Variance
+#######################################
+
+cox_tv <- coxph(Surv(TimeToEvent, Event01) ~ Diameter +
+                  tt(Diameter),
+                data = tmp,
+                tt = function(x, t, ...) x * log(t))
+summary(cox_tv)
+```
+
+### Multivariate Cox
+```{r}
+#######################################
+# Multivariate Cox - no corrections
+#######################################
+
+coxm <- coxph(Surv(TimeToEvent, Event01) ~ Diameter + Age + Sex + Race + BMI + Height + Exam + Site,data = tmp,tt = function(x, t, ...) x * log(t))
+summary(coxm)
+
+ph_test <- cox.zph(coxm)
+ph_test
+
+```
+
+### Multivariate Cox + Adjustments
+```{r}
+#######################################
+# Multivariate Cox + Term for Time Variance & Stratification
+#######################################
+
+cox_strat <- coxph(Surv(TimeToEvent, Event01) ~ Diameter + Age + Sex + Race + BMI + Height + Exam + Site + tt(Diameter),data = tmp,tt = function(x, t, ...) x * log(t))
+summary(cox_strat)
+```
+
+### Forest Plot
+```{r}
+#######################################
+# Forest Plot
+#######################################
+
+tidy_fit <- broom::tidy(cox_strat) %>% 
+  dplyr::filter(term != "(Intercept)") %>%            # drop intercept
+  dplyr::mutate(
+    OR  = exp(estimate),
+    LCL = exp(estimate - 1.96*std.error),
+    UCL = exp(estimate + 1.96*std.error)
+  )
+
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# add reference flag for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add significance flag for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+ggplot(tidy_fit, aes(x = term, y = OR,color = ref_flag)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_y_log10() +   # log scale = symmetric OR view
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio (log scale)",
+    title = "Effect Size Forest Plot"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")   # remove this if you want a legend
+
+
+```
+
+### Kaplan Meier
+```{r}
+#######################################
+# Kaplan Meier Curves
+#######################################
+
+# Add flag for 13mm cut off
+tmp <- tmp %>%
+  mutate(
+    diameter = if_else(Diameter > 13,
+                     "> 13 mm",
+                     "≤ 13 mm")
+  )
+
+# Ensure order in legend
+tmp$diameter <- factor(tmp$diameter, levels = c("≤ 13 mm", "> 13 mm"))
+
+# Convert to years
+tmp <- tmp %>%
+  mutate(TimeToEvent_years = TimeToEvent / 365.25)
+
+# Administrative censoring at 5 years
+horizon <- 5
+tmp <- tmp %>%
+  mutate(
+    Time_admin = pmin(TimeToEvent_years, horizon),
+    Event_admin = if_else(TimeToEvent_years <= horizon & Event01 == 1, 1, 0)
+  )
+
+# Unadjusted model using dichotomized 13mm cut off 
+fit <- survfit(Surv(TimeToEvent_years, Event_admin) ~ diameter, data = tmp)
+
+#5-year absolute risk and risk difference for annotation
+sf_5y <- summary(fit, times = horizon)
+
+# Extract log-rank p-value (correctly censored at 5 years)
+lr <- survdiff(Surv(Time_admin, Event_admin) ~ diameter, data = tmp)
+pval <- 1 - pchisq(lr$chisq, df = length(lr$n) - 1)
+
+# survival at 5y by stratum -> cumulative incidence = 1 - survival
+risk_5y <- 1 - sf_5y$surv
+names(risk_5y) <- gsub("^diameter=", "", sf_5y$strata)
+
+rd_5y <- risk_5y["> 13 mm"] - risk_5y["≤ 13 mm"]
+
+label_5y <- paste0(
+  "5-year risk (≤13 mm): ", scales::percent(risk_5y["≤ 13 mm"], accuracy = 0.1), "\n",
+  "5-year risk (>13 mm): ", scales::percent(risk_5y["> 13 mm"], accuracy = 0.1), "\n",
+  "Risk difference: ", scales::percent(rd_5y, accuracy = 0.1), "\n",
+  "Log-rank p = ", signif(pval, 2), " (censored at 5 years)"
+)
+
+# Plot
+p <- ggsurvplot(
+  fit,
+  fun = "event",
+  conf.int = TRUE,
+  risk.table = FALSE,
+  pval = FALSE,   # <- turn OFF auto p-value
+  palette = c("#011F5B", "#990000"),
+  xlab = "Time (years)",
+  ylab = "Cumulative incidence of varices",
+  xlim = c(0, horizon),
+  ylim = c(0, 0.11),
+  ggtheme = theme_classic(base_size = 24)# Use 24 for manuscript,
+)
+
+# NEW: Add the 5-year risk + RD annotation onto the plot
+p$plot <- p$plot +
+  annotate(
+    "text",
+    x = 0.5,
+    y = 0.11,
+    label = label_5y,
+    hjust = 0,
+    vjust = 1,
+    size = 5
+  )
+
+p$plot <- p$plot +
+  theme(legend.position = "none")
+
+p
+
+```
+## Ascites
+### Data
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, VaricesAfter, AscitesAfter, LiverPrior, VaricesPrior, AscitesPrior, VaricesFirstDate, AscitesFirstDate, Date, Death) %>%
+  dplyr::filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  dplyr::filter(LiverPrior == 1, AscitesPrior == 0) %>% # HAS LIVER DISEASE DOES NOT HAVE ASCITES
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    VaricesAfter = factor(VaricesAfter),
+    AscitesAfter = factor(AscitesAfter),
+    LiverPrior = factor(LiverPrior),
+    VaricesPrior = factor(VaricesPrior),
+    AscitesPrior = factor(AscitesPrior),
+    VaricesFirstDate = as.Date(VaricesFirstDate),
+    AscitesFirstDate = as.Date(AscitesFirstDate),
+    Date = as.Date(Date),
+    Death = as.Date(Death)
+    ) %>%
+  group_by(PMBBID) %>%
+  slice_min(Date, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Table outcome x race as some of the numbers get pretty small
+table(tmp$Race, tmp$AscitesAfter)
+
+# Exclude as needed if N 0
+tmp <- tmp %>%
+  dplyr::filter(Race != "More than One Race")%>%
+  dplyr::mutate(Race = droplevels(Race))
+  
+# Table outcome x race as some of the numbers get pretty small
+table(tmp$Race, tmp$AscitesAfter)
+
+#######################################
+# Create Event 0/1 and Time to Event Variables
+#######################################
+
+# this is the last date in the phecode file so made it the censoring date
+cutoff <- as.Date("2024-09-23")
+
+# Add Event, EndDate, and Time to Event Variables
+tmp <- tmp %>%
+  mutate(
+  # event occurs only if varices happens before death and cutoff
+    Event = if_else(
+      AscitesAfter == 1 &
+      (is.na(Death) | AscitesFirstDate < Death) &
+      AscitesFirstDate <= cutoff,
+      1L, 0L
+    ),
+    # end of follow-up = earliest of varices, death, or cutoff
+    EndDate = pmin(
+      AscitesFirstDate,
+      Death,
+      cutoff,
+      na.rm = TRUE
+    ),
+    # time-to-event in days
+    TimeToEvent = as.numeric(EndDate - Date) )
+
+# make 01 option for Event
+tmp$Event01 <- ifelse(tmp$Event == "1", 1L, 0L)
+```
+
+### Univariate Cox
+```{r}
+#######################################
+# Univariate Cox Model
+#######################################
+
+cox1 <- coxph(Surv(TimeToEvent, Event01) ~ Diameter,
+                            data = tmp)
+summary(cox1)
+
+# test for non-proportionality - is the log hazard ratio constant over time?
+ph_test <- cox.zph(cox1)
+ph_test
+```
+
+### Multivaraite Cox
+```{r}
+#######################################
+# Multivariate Cox - no corrections
+#######################################
+
+coxm <- coxph(Surv(TimeToEvent, Event01) ~ Diameter + Age + Sex + Race + BMI + Height + Exam + Site,data = tmp)
+summary(coxm)
+
+ph_test <- cox.zph(coxm)
+ph_test
+
+```
+
+### Multivariate Cox + Adjustments
+```{r}
+#######################################
+# Multivariate Cox + Term for Time Variance & Stratification
+#######################################
+
+cox_strat <- coxph(Surv(TimeToEvent, Event01) ~ Diameter + Height + BMI  + Sex + Site + Age+
+                  strata(Race) + strata(Exam) + tt(Age),
+                   data = tmp)
+summary(cox_strat)
+
+```
+
+### Forest Plot
+```{r}
+
+#######################################
+# Forest Plot
+#######################################
+
+tidy_fit <- broom::tidy(cox_strat) %>% 
+  dplyr::filter(term != "(Intercept)") %>%            # drop intercept
+  dplyr::mutate(
+    OR  = exp(estimate),
+    LCL = exp(estimate - 1.96*std.error),
+    UCL = exp(estimate + 1.96*std.error)
+  )
+
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# add reference flag for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add significance flag for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+ggplot(tidy_fit, aes(x = term, y = OR,color = ref_flag)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_y_log10() +   # log scale = symmetric OR view
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio (log scale)",
+    title = "Effect Size Forest Plot"
+  ) +
+  theme_bw()+
+  theme(legend.position = "none")   # remove this if you want a legend
+
+
+```
+
+### Kaplan Meier
+```{r}
+#######################################
+# Kaplan Meier Curves
+#######################################
+
+# Add flag for 13mm cut off
+tmp <- tmp %>%
+  mutate(
+    diameter = if_else(Diameter > 13,
+                     "> 13 mm",
+                     "≤ 13 mm")
+  )
+
+# Ensure order in legend
+tmp$diameter <- factor(tmp$diameter, levels = c("≤ 13 mm", "> 13 mm"))
+
+# Convert to years
+tmp <- tmp %>%
+  mutate(TimeToEvent_years = TimeToEvent / 365.25)
+
+# Administrative censoring at 5 years
+horizon <- 5
+tmp <- tmp %>%
+  mutate(
+    Time_admin = pmin(TimeToEvent_years, horizon),
+    Event_admin = if_else(TimeToEvent_years <= horizon & Event01 == 1, 1, 0)
+  )
+
+# Unadjusted model using dichotomized 13mm cut off 
+fit <- survfit(Surv(TimeToEvent_years, Event_admin) ~ diameter, data = tmp)
+
+#5-year absolute risk and risk difference for annotation
+sf_5y <- summary(fit, times = horizon)
+
+# Extract log-rank p-value (correctly censored at 5 years)
+lr <- survdiff(Surv(Time_admin, Event_admin) ~ diameter, data = tmp)
+pval <- 1 - pchisq(lr$chisq, df = length(lr$n) - 1)
+
+# survival at 5y by stratum -> cumulative incidence = 1 - survival
+risk_5y <- 1 - sf_5y$surv
+names(risk_5y) <- gsub("^diameter=", "", sf_5y$strata)
+
+rd_5y <- risk_5y["> 13 mm"] - risk_5y["≤ 13 mm"]
+
+label_5y <- paste0(
+  "5-year risk (≤13 mm): ", scales::percent(risk_5y["≤ 13 mm"], accuracy = 0.1), "\n",
+  "5-year risk (>13 mm): ", scales::percent(risk_5y["> 13 mm"], accuracy = 0.1), "\n",
+  "Risk difference: ", scales::percent(rd_5y, accuracy = 0.1), "\n",
+  "Log-rank p = ", signif(pval, 2), " (censored at 5 years)"
+)
+
+# Plot
+p <- ggsurvplot(
+  fit,
+  fun = "event",
+  conf.int = TRUE,
+  risk.table = FALSE,
+  pval = FALSE,   # <- turn OFF auto p-value
+  palette = c("#011F5B", "#990000"),
+  xlab = "Time (years)",
+  ylab = "Cumulative incidence of ascites",
+  xlim = c(0, horizon),
+  ylim = c(0, 0.11),
+  ggtheme = theme_classic(base_size = 24)# Use 24 for manuscript,
+)
+
+# NEW: Add the 5-year risk + RD annotation onto the plot
+p$plot <- p$plot +
+  annotate(
+    "text",
+    x = 0.5,
+    y = 0.11,
+    label = label_5y,
+    hjust = 0,
+    vjust = 1,
+    size = 5
+  )
+
+p$plot <- p$plot +
+  theme(legend.position = "none")
+
+p
+
+```
+
+## Falsification Endpoint: Osteoarthritis
+### Data
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, OaAfter, LiverPrior, OaPrior, OaFirstDate, Date, Death) %>%
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  dplyr::filter(LiverPrior == 1, OaPrior == 0) %>% # HAS LIVER DISEASE DOES NOT HAVE OA
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    OaAfter = factor(OaAfter),
+    LiverPrior = factor(LiverPrior),
+    OaPrior = factor(OaPrior),
+    OaFirstDate = as.Date(OaFirstDate),
+    Date = as.Date(Date),
+    Death = as.Date(Death)
+    ) %>%
+  group_by(PMBBID) %>%
+  slice_min(Date, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Table outcome x race as some of the numbers get pretty small
+table(tmp$Race, tmp$OaAfter)
+
+# Exclude as needed
+#tmp <- tmp %>%
+#  dplyr::filter(!Race %in% c("Asian", "More than One Race"))%>%
+#  dplyr::mutate(Race = droplevels(Race))
+  
+#######################################
+# Create Event 0/1 and Time to Event Variables
+#######################################
+
+# this is the last date in the phecode file so made it the censoring date
+cutoff <- as.Date("2024-09-23")
+
+# Add Event, EndDate, and Time to Event Variables
+tmp <- tmp %>%
+  mutate(
+  # event occurs only if varices happens before death and cutoff
+    Event = if_else(
+      OaAfter == 1 &
+      (is.na(Death) | OaFirstDate < Death) &
+      OaFirstDate <= cutoff,
+      1L, 0L
+    ),
+    # end of follow-up = earliest of varices, death, or cutoff
+    EndDate = pmin(
+      OaFirstDate,
+      Death,
+      cutoff,
+      na.rm = TRUE
+    ),
+    # time-to-event in days
+    TimeToEvent = as.numeric(EndDate - Date) )
+
+# make 01 option for Event
+tmp$Event01 <- ifelse(tmp$Event == "1", 1L, 0L)
+```
+
+### Univariate Cox
+```{r}
+#######################################
+# Univariate Cox Model
+#######################################
+
+cox1 <- coxph(Surv(TimeToEvent, Event01) ~ Diameter,
+              data = tmp)
+summary(cox1)
+
+# test for non-proportionality - is the log hazard ratio constant over time?
+ph_test <- cox.zph(cox1)
+ph_test
+```
+
+### Multivariate Cox
+```{r}
+#######################################
+# Multivariate Cox - no corrections
+#######################################
+
+coxm <- coxph(Surv(TimeToEvent, Event01) ~ Diameter + Age + Sex + Race + BMI + Height + Exam + Site,data = tmp,tt = function(x, t, ...) x * log(t))
+summary(coxm)
+
+ph_test <- cox.zph(coxm)
+ph_test
+```
+
+### Forest Plot
+```{r}
+##################################
+# Forest Plot
+#######################################
+
+tidy_fit <- broom::tidy(coxm) %>% 
+  dplyr::filter(term != "(Intercept)") %>%            # drop intercept
+  dplyr::mutate(
+    OR  = exp(estimate),
+    LCL = exp(estimate - 1.96*std.error),
+    UCL = exp(estimate + 1.96*std.error)
+  )
+
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# add reference flag for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add significance flag for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+ggplot(tidy_fit, aes(x = term, y = OR,color = ref_flag)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_y_log10() +   # log scale = symmetric OR view
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio (log scale)",
+    title = "Effect Size Forest Plot"
+  ) +
+  theme_bw()+
+  theme(legend.position = "none")   # remove this if you want a legend
+
+
+```
+
+### Kaplan Meier
+```{r}
+#######################################
+# Kaplan Meier Curves
+#######################################
+
+# Add flag for 13mm cut off
+tmp <- tmp %>%
+  mutate(
+    diameter = if_else(Diameter > 13,
+                     "> 13 mm",
+                     "≤ 13 mm")
+  )
+
+# Ensure order in legend
+tmp$diameter <- factor(tmp$diameter, levels = c("≤ 13 mm", "> 13 mm"))
+
+# Convert to years
+tmp <- tmp %>%
+  mutate(TimeToEvent_years = TimeToEvent / 365.25)
+
+# Administrative censoring at 5 years
+horizon <- 5
+tmp <- tmp %>%
+  mutate(
+    Time_admin = pmin(TimeToEvent_years, horizon),
+    Event_admin = if_else(TimeToEvent_years <= horizon & Event01 == 1, 1, 0)
+  )
+
+# Unadjusted model using dichotomized 13mm cut off 
+fit <- survfit(Surv(TimeToEvent_years, Event_admin) ~ diameter, data = tmp)
+
+#5-year absolute risk and risk difference for annotation
+sf_5y <- summary(fit, times = horizon)
+
+# Extract log-rank p-value (correctly censored at 5 years)
+lr <- survdiff(Surv(Time_admin, Event_admin) ~ diameter, data = tmp)
+pval <- 1 - pchisq(lr$chisq, df = length(lr$n) - 1)
+
+# survival at 5y by stratum -> cumulative incidence = 1 - survival
+risk_5y <- 1 - sf_5y$surv
+names(risk_5y) <- gsub("^diameter=", "", sf_5y$strata)
+
+rd_5y <- risk_5y["> 13 mm"] - risk_5y["≤ 13 mm"]
+
+label_5y <- paste0(
+  "5-year risk (≤13 mm): ", scales::percent(risk_5y["≤ 13 mm"], accuracy = 0.1), "\n",
+  "5-year risk (>13 mm): ", scales::percent(risk_5y["> 13 mm"], accuracy = 0.1), "\n",
+  "Risk difference: ", scales::percent(rd_5y, accuracy = 0.1), "\n",
+  "Log-rank p = ", signif(pval, 2), " (censored at 5 years)"
+)
+
+# Plot
+p <- ggsurvplot(
+  fit,
+  fun = "event",
+  conf.int = TRUE,
+  risk.table = FALSE,
+  pval = FALSE,   # <- turn OFF auto p-value
+  palette = c("#011F5B", "#990000"),
+  xlab = "Time (years)",
+  ylab = "Cumulative incidence of osteoarthritis",
+  xlim = c(0, horizon),
+  ylim = c(0, 0.16),
+  ggtheme = theme_classic(base_size = 24)# Use 24 for manuscript,
+)
+
+# NEW: Add the 5-year risk + RD annotation onto the plot
+p$plot <- p$plot +
+  annotate(
+    "text",
+    x = 0.5,
+    y = 0.16,
+    label = label_5y,
+    hjust = 0,
+    vjust = 1,
+    size = 5
+  )
+
+p$plot <- p$plot +
+  theme(legend.position = "none")
+
+p
+
+```
+
+## Falsification Endpoint: Lipoma
+### Data
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, LipomaAfter, LiverPrior, LipomaPrior, LipomaFirstDate, Date, Death) %>%
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  dplyr::filter(LiverPrior == 1, LipomaPrior == 0) %>% # HAS LIVER DISEASE DOES NOT HAVE lipoma
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    LipomaAfter = factor(LipomaAfter),
+    LiverPrior = factor(LiverPrior),
+    LipomaPrior = factor(LipomaPrior),
+    LipomaFirstDate = as.Date(LipomaFirstDate),
+    Date = as.Date(Date),
+    Death = as.Date(Death)
+    ) %>%
+  group_by(PMBBID) %>%
+  slice_min(Date, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Table outcome x race as some of the numbers get pretty small
+table(tmp$Race, tmp$LipomaAfter)
+
+# Exclude as needed
+tmp <- tmp %>%
+  dplyr::filter(!Race %in% c("Asian", "More than One Race"))%>%
+  dplyr::mutate(Race = droplevels(Race))
+  
+#######################################
+# Create Event 0/1 and Time to Event Variables
+#######################################
+
+# this is the last date in the phecode file so made it the censoring date
+cutoff <- as.Date("2024-09-23")
+
+# Add Event, EndDate, and Time to Event Variables
+tmp <- tmp %>%
+  mutate(
+  # event occurs only if varices happens before death and cutoff
+    Event = if_else(
+      LipomaAfter == 1 &
+      (is.na(Death) | LipomaFirstDate < Death) &
+      LipomaFirstDate <= cutoff,
+      1L, 0L
+    ),
+    # end of follow-up = earliest of varices, death, or cutoff
+    EndDate = pmin(
+      LipomaFirstDate,
+      Death,
+      cutoff,
+      na.rm = TRUE
+    ),
+    # time-to-event in days
+    TimeToEvent = as.numeric(EndDate - Date) )
+
+# make 01 option for Event
+tmp$Event01 <- ifelse(tmp$Event == "1", 1L, 0L)
+```
+
+### Univariate Cox
+```{r}
+#######################################
+# Univariate Cox Model
+#######################################
+
+cox1 <- coxph(Surv(TimeToEvent, Event01) ~ Diameter,
+              data = tmp)
+summary(cox1)
+
+# test for non-proportionality - is the log hazard ratio constant over time?
+ph_test <- cox.zph(cox1)
+ph_test
+```
+
+### Multivariate Cox
+```{r}
+#######################################
+# Multivariate Cox - no corrections
+#######################################
+
+coxm <- coxph(Surv(TimeToEvent, Event01) ~ Diameter + Age + Sex + Race + BMI + Height + Exam + Site,data = tmp,tt = function(x, t, ...) x * log(t))
+summary(coxm)
+
+ph_test <- cox.zph(coxm)
+ph_test
+```
+
+### Multivariate Cox + Adjustments
+```{r}
+#######################################
+# Multivariate Cox + Term for Time Variance & Stratification
+#######################################
+
+cox_strat <- coxph(Surv(TimeToEvent, Event01) ~ Diameter + Age + Sex + Race + BMI + Height + Exam + Race + tt(BMI),data = tmp,tt = function(x, t, ...) x * log(t))
+summary(cox_strat)
+
+```
+
+### Forest Plot
+```{r}
+
+#######################################
+# Forest Plot
+#######################################
+
+tidy_fit <- broom::tidy(cox_strat) %>% 
+  dplyr::filter(term != "(Intercept)") %>%            # drop intercept
+  dplyr::mutate(
+    OR  = exp(estimate),
+    LCL = exp(estimate - 1.96*std.error),
+    UCL = exp(estimate + 1.96*std.error)
+  )
+
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# add reference flag for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add significance flag for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+ggplot(tidy_fit, aes(x = term, y = OR,color = ref_flag)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_y_log10() +   # log scale = symmetric OR view
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio (log scale)",
+    title = "Effect Size Forest Plot"
+  ) +
+  theme_bw()+
+  theme(legend.position = "none")   # remove this if you want a legend
+
+```
+
+### Kaplan Meier
+```{r}
+#######################################
+# Kaplan Meier Curves
+#######################################
+
+# Add flag for 13mm cut off
+tmp <- tmp %>%
+  mutate(
+    diameter = if_else(Diameter > 13,
+                     "> 13 mm",
+                     "≤ 13 mm")
+  )
+
+# Ensure order in legend
+tmp$diameter <- factor(tmp$diameter, levels = c("≤ 13 mm", "> 13 mm"))
+
+# Convert to years
+tmp <- tmp %>%
+  mutate(TimeToEvent_years = TimeToEvent / 365.25)
+
+# Administrative censoring at 5 years
+horizon <- 5
+tmp <- tmp %>%
+  mutate(
+    Time_admin = pmin(TimeToEvent_years, horizon),
+    Event_admin = if_else(TimeToEvent_years <= horizon & Event01 == 1, 1, 0)
+  )
+
+# Unadjusted model using dichotomized 13mm cut off 
+fit <- survfit(Surv(TimeToEvent_years, Event_admin) ~ diameter, data = tmp)
+
+#5-year absolute risk and risk difference for annotation
+sf_5y <- summary(fit, times = horizon)
+
+# Extract log-rank p-value (correctly censored at 5 years)
+lr <- survdiff(Surv(Time_admin, Event_admin) ~ diameter, data = tmp)
+pval <- 1 - pchisq(lr$chisq, df = length(lr$n) - 1)
+
+# survival at 5y by stratum -> cumulative incidence = 1 - survival
+risk_5y <- 1 - sf_5y$surv
+names(risk_5y) <- gsub("^diameter=", "", sf_5y$strata)
+
+rd_5y <- risk_5y["> 13 mm"] - risk_5y["≤ 13 mm"]
+
+label_5y <- paste0(
+  "5-year risk (≤13 mm): ", scales::percent(risk_5y["≤ 13 mm"], accuracy = 0.1), "\n",
+  "5-year risk (>13 mm): ", scales::percent(risk_5y["> 13 mm"], accuracy = 0.1), "\n",
+  "Risk difference: ", scales::percent(rd_5y, accuracy = 0.1), "\n",
+  "Log-rank p = ", signif(pval, 2), " (censored at 5 years)"
+)
+
+# Plot
+p <- ggsurvplot(
+  fit,
+  fun = "event",
+  conf.int = TRUE,
+  risk.table = FALSE,
+  pval = FALSE,   # <- turn OFF auto p-value
+  palette = c("#011F5B", "#990000"),
+  xlab = "Time (years)",
+  ylab = "Cumulative incidence of lipoma",
+  xlim = c(0, horizon),
+  ylim = c(0, 0.05),
+  ggtheme = theme_classic(base_size = 24)# Use 24 for manuscript,
+)
+
+# NEW: Add the 5-year risk + RD annotation onto the plot
+p$plot <- p$plot +
+  annotate(
+    "text",
+    x = 0.5,
+    y = 0.05,
+    label = label_5y,
+    hjust = 0,
+    vjust = 1,
+    size = 5
+  )
+
+p$plot <- p$plot +
+  theme(legend.position = "none")
+
+p
+
+```
+
+## Falsification Endpoint: Cataract
+
+### Data
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, CataractAfter, LiverPrior, CataractPrior, CataractFirstDate, Date, Death) %>%
+  dplyr::filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  dplyr::filter(LiverPrior == 1, CataractPrior == 0) %>% # HAS LIVER DISEASE DOES NOT HAVE CATARACTS
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    CataractAfter = factor(CataractAfter),
+    LiverPrior = factor(LiverPrior),
+    CataractPrior = factor(CataractPrior),
+    CataractFirstDate = as.Date(CataractFirstDate),
+    Date = as.Date(Date),
+    Death = as.Date(Death)
+    ) %>%
+  group_by(PMBBID) %>%
+  slice_min(Date, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Table outcome x race as some of the numbers get pretty small
+table(tmp$Race, tmp$CataractAfter)
+
+# Exclude as needed if N 0
+tmp <- tmp %>%
+  dplyr::filter(Race != "More than One Race")%>%
+  dplyr::mutate(Race = droplevels(Race))
+  
+#######################################
+# Create Event 0/1 and Time to Event Variables
+#######################################
+
+# this is the last date in the phecode file so made it the censoring date
+cutoff <- as.Date("2024-09-23")
+
+# Add Event, EndDate, and Time to Event Variables
+tmp <- tmp %>%
+  mutate(
+  # event occurs only if varices happens before death and cutoff
+    Event = if_else(
+      CataractAfter == 1 &
+      (is.na(Death) | CataractFirstDate < Death) &
+      CataractFirstDate <= cutoff,
+      1L, 0L
+    ),
+    # end of follow-up = earliest of varices, death, or cutoff
+    EndDate = pmin(
+      CataractFirstDate,
+      Death,
+      cutoff,
+      na.rm = TRUE
+    ),
+    # time-to-event in days
+    TimeToEvent = as.numeric(EndDate - Date) )
+
+# make 01 option for Event
+tmp$Event01 <- ifelse(tmp$Event == "1", 1L, 0L)
+
+```
+
+### Univariate Cox
+```{r}
+#######################################
+# Univariate Cox Model
+#######################################
+
+cox1 <- coxph(Surv(TimeToEvent, Event01) ~ Diameter,
+                            data = tmp)
+summary(cox1)
+
+# test for non-proportionality - is the log hazard ratio constant over time?
+ph_test <- cox.zph(cox1)
+ph_test
+```
+
+### Univariate Cox + Adjustments
+```{r}
+#######################################
+# Univariate Cox + Term for Time Variance
+#######################################
+
+cox_tv <- coxph(Surv(TimeToEvent, Event01) ~ Diameter +
+                  tt(Diameter),
+                data = tmp,
+                tt = function(x, t, ...) x * log(t))
+summary(cox_tv)
+```
+
+### Multivariate Cox
+```{r}
+#######################################
+# Multivariate Cox - no corrections
+#######################################
+
+coxm <- coxph(Surv(TimeToEvent, Event01) ~ Diameter + Age + Sex + Race + BMI + Height + Exam + Site,data = tmp)
+summary(coxm)
+
+ph_test <- cox.zph(coxm)
+ph_test
+```
+
+### Multivariate Cox + Adjustments
+```{r}
+#######################################
+# Multivariate Cox + Term for Time Variance & Stratification
+#######################################
+
+cox_strat <- coxph(Surv(TimeToEvent, Event01) ~ Diameter + Height + BMI + Exam + Age+ Race + Site
+                  + strata(Sex) + tt(Height) + tt(Diameter),
+                   data = tmp, tt = function(x, t, ...) x * log(t))
+summary(cox_strat)
+
+```
+
+### Forest Plot
+```{r}
+#######################################
+# Forest Plot
+#######################################
+
+tidy_fit <- broom::tidy(cox_strat) %>% 
+  dplyr::filter(term != "(Intercept)") %>%            # drop intercept
+  dplyr::mutate(
+    OR  = exp(estimate),
+    LCL = exp(estimate - 1.96*std.error),
+    UCL = exp(estimate + 1.96*std.error)
+  )
+
+tidy_fit$term <- factor(tidy_fit$term, levels = tidy_fit$term)
+
+# add reference flag for color in plot
+tidy_fit <- tidy_fit %>%
+  mutate(ref_flag = ifelse(grepl("\\(reference\\)", term, ignore.case = TRUE),
+                           "reference", "nonreference"))
+
+# add significance flag for color in plot
+tidy_fit[which(tidy_fit$p.value >= 0.05),]$ref_flag <- "nonsignificant" 
+
+ggplot(tidy_fit, aes(x = term, y = OR,color = ref_flag)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  scale_y_log10() +   # log scale = symmetric OR view
+  scale_color_manual(
+    values = c(
+      "reference" = "#011F5B",    
+      "nonreference" = "#990000",  
+      "nonsignificant" = "gray"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Odds Ratio (log scale)",
+    title = "Effect Size Forest Plot"
+  ) +
+  theme_bw()+
+  theme(legend.position = "none")   # remove this if you want a legend
+
+```
+### Kaplain Meier
+```{r}
+#######################################
+# Kaplan Meier Curves
+#######################################
+
+# Add flag for 13mm cut off
+tmp <- tmp %>%
+  mutate(
+    diameter = if_else(Diameter > 13,
+                     "> 13 mm",
+                     "≤ 13 mm")
+  )
+
+# Ensure order in legend
+tmp$diameter <- factor(tmp$diameter, levels = c("≤ 13 mm", "> 13 mm"))
+
+# Convert to years
+tmp <- tmp %>%
+  mutate(TimeToEvent_years = TimeToEvent / 365.25)
+
+# Administrative censoring at 5 years
+horizon <- 5
+tmp <- tmp %>%
+  mutate(
+    Time_admin = pmin(TimeToEvent_years, horizon),
+    Event_admin = if_else(TimeToEvent_years <= horizon & Event01 == 1, 1, 0)
+  )
+
+# Unadjusted model using dichotomized 13mm cut off 
+fit <- survfit(Surv(TimeToEvent_years, Event_admin) ~ diameter, data = tmp)
+
+#5-year absolute risk and risk difference for annotation
+sf_5y <- summary(fit, times = horizon)
+
+# Extract log-rank p-value (correctly censored at 5 years)
+lr <- survdiff(Surv(Time_admin, Event_admin) ~ diameter, data = tmp)
+pval <- 1 - pchisq(lr$chisq, df = length(lr$n) - 1)
+
+# survival at 5y by stratum -> cumulative incidence = 1 - survival
+risk_5y <- 1 - sf_5y$surv
+names(risk_5y) <- gsub("^diameter=", "", sf_5y$strata)
+
+rd_5y <- risk_5y["> 13 mm"] - risk_5y["≤ 13 mm"]
+
+label_5y <- paste0(
+  "5-year risk (≤13 mm): ", scales::percent(risk_5y["≤ 13 mm"], accuracy = 0.1), "\n",
+  "5-year risk (>13 mm): ", scales::percent(risk_5y["> 13 mm"], accuracy = 0.1), "\n",
+  "Risk difference: ", scales::percent(rd_5y, accuracy = 0.1), "\n",
+  "Log-rank p = ", signif(pval, 2), " (censored at 5 years)"
+)
+
+# Plot
+p <- ggsurvplot(
+  fit,
+  fun = "event",
+  conf.int = TRUE,
+  risk.table = FALSE,
+  pval = FALSE,   # <- turn OFF auto p-value
+  palette = c("#011F5B", "#990000"),
+  xlab = "Time (years)",
+  ylab = "Cumulative incidence of cataracts",
+  xlim = c(0, horizon),
+  ggtheme = theme_classic(base_size = 18)# Use 24 for manuscript
+)
+
+# NEW: Add the 5-year risk + RD annotation onto the plot
+p$plot <- p$plot +
+  annotate(
+    "text",
+    x = 0.5,
+    y = 0.115,
+    label = label_5y,
+    hjust = 0,
+    vjust = 1,
+    size = 3.6
+  )
+
+p
+
+```
+
+# 4. Hepatic Venous Pressures
+## Data
+```{r}
+#######################################
+# data subset
+#######################################
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, Wedged, Gradient, SpleenVol, Date, Pressures_Date) %>%
+  tidyr::drop_na() %>%
+  dplyr::mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    Wedged = as.numeric(Wedged),
+    Gradient = as.numeric(Gradient),
+    SpleenVol = as.numeric(SpleenVol),
+    CT.Date = as.Date(Date),
+    Pressures.Date = as.Date(Pressures_Date),
+    diff = abs(CT.Date - Pressures.Date)
+    )
+
+#######################################
+# Identify closest pair of CT and wedged pressure
+#######################################
+best_per_wedged <- tmp %>%
+  filter(!is.na(Date), !is.na(Pressures_Date), !is.na(Wedged)) %>%
+  mutate(
+    Date = as.Date(Date),
+    Pressures_Date = as.Date(Pressures_Date),
+    .signed_diff = as.numeric(Pressures_Date - Date),
+    .abs_diff    = abs(.signed_diff)
+  ) %>%
+  arrange(
+    PMBBID, Wedged,
+    .abs_diff,
+    .signed_diff < 0,
+    desc(Pressures_Date)
+  ) %>%
+  distinct(PMBBID, Wedged, .keep_all = TRUE) %>%
+  dplyr::select(-.signed_diff, -.abs_diff)
+```
+
+## Correlation
+```{r}
+#######################################
+# Correlation
+#######################################
+# Do invasive hepatic pressures correlate?
+cor.test(best_per_wedged$Wedged, best_per_wedged$Gradient)
+
+ggplot(best_per_wedged, aes(x = Wedged, y = Gradient)) +
+  geom_point(
+    shape = 1,
+    color = "#011F5B",
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  labs(
+    y = "Hepatic Venous Pressure Gradient (mmHg)",
+    x = "Wedged Hepatic Pressure (mmHg)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16)
+  )
+
+# Do pressures correlate with diameter ... not really 
+cor.test(best_per_wedged$Wedged, best_per_wedged$Diameter)
+
+ggplot(best_per_wedged, aes(x = Diameter, y = Wedged)) +
+  geom_point(
+    shape = 3,
+    color = "#011F5B",
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  labs(
+    y = "Wedged Hepatic Pressure (mmHg)",
+    x = "Portal Vein Diameter (mm)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16)
+  )
+
+cor.test(best_per_wedged$Gradient, best_per_wedged$Diameter)
+
+ggplot(best_per_wedged, aes(x = Diameter, y = Gradient)) +
+  geom_point(
+    shape = 1,
+    color = "#011F5B",
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  labs(
+    y = "Hepatic Venous Pressure Gradient (mmHg)",
+    x = "Portal Vein Diameter (mm)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16)
+  )
+
+```
+
+## Correlation 1 year
+```{r}
+best_per_wedged -> best_per_wedged_all
+best_per_wedged <- best_per_wedged_all[which(best_per_wedged_all$diff <= 365),]
+
+#######################################
+# Correlation
+#######################################
+# Do invasive hepatic pressures correlate?
+cor.test(best_per_wedged$Wedged, best_per_wedged$Gradient)
+
+ggplot(best_per_wedged, aes(x = Wedged, y = Gradient)) +
+  geom_point(
+    shape = 1,
+    color = "#011F5B",
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  labs(
+    y = "Hepatic Venous Pressure Gradient (mmHg)",
+    x = "Wedged Hepatic Pressure (mmHg)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16)
+  )
+
+# Do pressures correlate with diameter ... not really 
+cor.test(best_per_wedged$Wedged, best_per_wedged$Diameter)
+
+ggplot(best_per_wedged, aes(x = Diameter, y = Wedged)) +
+  geom_point(
+    shape = 3,
+    color = "#011F5B",
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  labs(
+    y = "Wedged Hepatic Pressure (mmHg)",
+    x = "Portal Vein Diameter (mm)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16)
+  )
+
+cor.test(best_per_wedged$Gradient, best_per_wedged$Diameter)
+
+ggplot(best_per_wedged, aes(x = Diameter, y = Gradient)) +
+  geom_point(
+    shape = 1,
+    color = "#011F5B",
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  labs(
+    y = "Hepatic Venous Pressure Gradient (mmHg)",
+    x = "Portal Vein Diameter (mm)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16)
+  )
+
+best_per_wedged <- best_per_wedged_all
+```
+
+## Modeling 
+### Univariable
+```{r}
+#######################################
+# Modeling, univariable
+#######################################
+m <- lm(Gradient ~ Diameter, data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+m <- lm(Wedged ~ Diameter, data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+```
+
+### Multivariable
+```{r}
+#######################################
+# Modeling,  multivariable
+#######################################
+m <- lm(Gradient ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site , data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+m <- lm(Wedged ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site , data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+```
+
+## Modeling 1 year
+### Univariable
+```{r}
+tmp -> tmp_all
+tmp <- tmp_all[which(tmp_all$diff <= 365),]
+
+#######################################
+# Modeling, univariable
+#######################################
+
+# Modeling - univariable
+m <- lm(Gradient ~ Diameter, data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+m <- lm(Wedged ~ Diameter, data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+```
+
+### Multivariable
+```{r}
+#######################################
+# Modeling,  multivariable
+#######################################
+m <- lm(Gradient ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site , data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+m <- lm(Wedged ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site , data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+tmp <- tmp_all
+
+```
+
+## Time Difference
+```{r}
+#######################################
+# Time Difference
+#######################################
+# Summary
+summary(as.numeric(tmp$diff))
+
+# Hist
+ggplot(tmp, aes(x = as.numeric(diff))) +
+  geom_histogram(binwidth = 60, fill = "#990000", color = "black") +
+  labs(
+    x = "abs(Time Difference),days",
+    y = "Count",
+    title = NULL
+  ) +
+  theme_minimal(base_size = 20) 
+```
+### Modeling with Time Difference Included
+```{r}
+# Modeling - Multivariate + Time
+m <- lm(Gradient ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site + diff, data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+m <- lm(Wedged ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site + diff, data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+# Modeling - Multivariate + Time + Spleen
+m <- lm(Gradient ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site + diff + SpleenVol, data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+m <- lm(Wedged ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site + diff + SpleenVol, data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+#######################################
+```
+### Plots
+
+```{r}
+ggplot(best_per_wedged, aes(x = Wedged, y = Gradient, color = as.numeric(diff))) +
+  geom_point(
+    shape = 1,
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  scale_color_gradient(
+    low  = "#011F5B",   # dark = small diff
+    high = "grey85" # light = large diff
+  ) +
+  labs(
+    y = "Hepatic Venous Pressure Gradient (mmHg)",
+    x = "Wedged Hepatic Pressure (mmHg)",
+    color = "|Δ time| (days)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16),
+    legend.title = element_text(face = "bold")
+  )
+
+ggplot(best_per_wedged, aes(x = Diameter, y = Gradient, color = as.numeric(diff))) +
+  geom_point(
+    shape = 1,
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  scale_color_gradient(
+    low  = "#011F5B",   # dark = small diff
+    high = "grey85" # light = large diff
+  ) +
+  labs(
+    y = "Hepatic Venous Pressure Gradient (mmHg)",
+    x = "Portal Vein Diameter (mm)",
+    color = "|Δ time| (days)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16),
+    legend.title = element_text(face = "bold")
+  )
+
+ggplot(best_per_wedged, aes(x = Diameter, y = Wedged, color = as.numeric(diff))) +
+  geom_point(
+    shape = 1,
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  scale_color_gradient(
+    low  = "#011F5B",   # dark = small diff
+    high = "grey85" # light = large diff
+  ) +
+  labs(
+    y = "Wedged Hepatic Pressure (mmHg)",
+    x = "Portal Vein Diameter (mm)",
+    color = "|Δ time| (days)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16),
+    legend.title = element_text(face = "bold")
+  )
+
+```
+
+## 5. Spleen Volume
+
+### All Correlation 
+#### Data 
+```{r}
+#######################################
+# data subset
+#######################################
+
+tmp_first <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, SpleenVol, Date) %>%
+  tidyr::drop_na() %>%
+  dplyr::mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    SpleenVol = as.numeric(SpleenVol),
+    CT.Date = as.Date(Date)) %>%
+  group_by(PMBBID) %>%
+  slice_min(Date, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+tmp <- pv_clean %>%
+  dplyr::select(Diameter, PMBBID, Sex, Age, Height, BMI, Race, Exam, Site, Contrast_Category, Contrast, Year, Month, SpleenVol) %>%
+  filter(!Race %in% c("American Indian or Alaska Native", "Native Hawaiian or Other Pacific Islander")) %>% 
+  drop_na() %>%
+  mutate(
+    Sex = factor(Sex),
+    Race = factor(Race),
+    Race = fct_relevel(Race, "White"),
+    Exam = factor(Exam),
+    Exam = fct_relevel(Exam, "CT Abd/Pelvis Without Contrast"),
+    Site = factor(Site),
+    Site = fct_relevel(Site, "Outpatient"),
+    Contrast_Category = factor(Contrast_Category),
+    Contrast_Category = fct_relevel(Contrast_Category, "No Contrast"),
+    Contrast = factor(Contrast),
+    Year = factor(Year),
+    Month = factor(Month),
+    SpleenVol = as.numeric(SpleenVol))
+```
+
+#### Correlation
+```{r}
+
+# Do pressures correlate with diameter ... not really 
+cor.test(tmp_first$SpleenVol, tmp_first$Diameter)
+
+ggplot(tmp_first, aes(x = Diameter, y = SpleenVol)) +
+  geom_point(
+    shape = 20,
+    color = "#011F5B",
+    stroke = 1.8,
+    size = 4.2
+  ) +
+  labs(
+    y = "Spleen Volume (mm³)",
+    x = "Measured Portal Vein Diameter(mm)"
+  ) +
+  theme_classic(base_size = 20) +
+  theme(
+    axis.title = element_text(face = "bold", size = 20),
+    axis.text  = element_text(color = "black", size = 16)
+  )
+
+```
+
+### All Modeling
+#### Univariable
+```{r}
+#######################################
+# Modeling, univariable
+#######################################
+
+# Just in those without demographic NAs
+m <- lm(SpleenVol ~ Diameter, data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+# In everyone
+m <- lm(SpleenVol ~ Diameter, data = pv_clean)
+coeftest(m, vcov = vcovCL, cluster = pv_clean$PMBBID)
+
+# 95% CI
+vc <- vcovCL(m, cluster = pv_clean$PMBBID)
+# Extract coefficients and SEs
+est <- coef(m)
+se  <- sqrt(diag(vc))
+
+# Residual degrees of freedom
+df <- m$df.residual
+
+# Critical value
+tcrit <- qt(0.975, df = df)
+
+# 95% CI
+ci <- cbind(
+  Estimate = est,
+  Lower = est - tcrit * se,
+  Upper = est + tcrit * se
+)
+
+ci
+
+```
+
+#### Multivariable
+```{r}
+#######################################
+# Modeling,  multivariable
+#######################################
+
+m <- lm(SpleenVol ~ Diameter + Age + Height + BMI + Sex + Race + Exam + Site , data = tmp)
+coeftest(m, vcov = vcovCL, cluster = tmp$PMBBID)
+
+# 95% CI
+vc <- vcovCL(m, cluster = tmp$PMBBID)
+
+# Extract coefficients and SEs
+est <- coef(m)
+se  <- sqrt(diag(vc))
+
+# Residual degrees of freedom
+df <- m$df.residual
+
+# Critical value
+tcrit <- qt(0.975, df = df)
+
+# 95% CI
+ci <- cbind(
+  Estimate = est,
+  Lower = est - tcrit * se,
+  Upper = est + tcrit * se
+)
+
+ci
+
+```
